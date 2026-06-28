@@ -10,13 +10,15 @@ TOKEN = os.getenv("BOT_TOKEN")
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# Список покупок
+# Базы данных в памяти
 shopping_list = []
+users = set()  # Храним ID людей, которые нажали /start
 
-# Создаем кнопки
+# Кнопки
 keyboard = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="🛒 Посмотреть список"), KeyboardButton(text="🗑 Очистить всё")]
+        [KeyboardButton(text="🛒 Посмотреть список"), KeyboardButton(text="📩 Отправить просьбу")],
+        [KeyboardButton(text="🗑 Очистить всё")]
     ],
     resize_keyboard=True
 )
@@ -27,8 +29,9 @@ async def handle(request):
 
 @dp.message(Command("start"))
 async def start_handler(message: types.Message):
+    users.add(message.from_user.id)  # Запоминаем ID того, кто нажал старт
     await message.answer("Привет! Я твой семейный помощник.\n"
-                         "Просто напиши название продукта, чтобы добавить его, или используй кнопки ниже.", 
+                         "Используй кнопки для управления списком или пересылки просьб.", 
                          reply_markup=keyboard)
 
 @dp.message(F.text == "🛒 Посмотреть список")
@@ -44,27 +47,42 @@ async def clear_list(message: types.Message):
     shopping_list.clear()
     await message.answer("Список успешно очищен!")
 
-@dp.message(F.text & ~F.text.startswith("/"))
-async def add_item(message: types.Message):
-    # Игнорируем нажатия кнопок, чтобы не добавлять их в список
-    if message.text not in ["🛒 Посмотреть список", "🗑 Очистить всё"]:
+@dp.message(F.text == "📩 Отправить просьбу")
+async def ask_request(message: types.Message):
+    await message.answer("Напиши текст просьбы, и я отправлю его другому пользователю:")
+
+@dp.message(F.text & ~F.text.startswith("/") & ~F.text.in_({"🛒 Посмотреть список", "🗑 Очистить всё", "📩 Отправить просьбу"}))
+async def handle_text(message: types.Message):
+    # Если в списке нет других пользователей, кроме отправителя
+    other_users = [u for u in users if u != message.from_user.id]
+    
+    # Логика: если отправили просьбу, а не продукт
+    if not other_users:
+        # Добавляем в список покупок, если нет адресата для просьбы
         shopping_list.append(message.text)
-        await message.answer(f"✅ Добавлено: {message.text}")
+        await message.answer(f"✅ Добавлено в список покупок: {message.text}")
+    else:
+        # Отправляем всем остальным
+        for user_id in other_users:
+            try:
+                await bot.send_message(user_id, f"🔔 Просьба от {message.from_user.first_name}:\n\n{message.text}")
+                await message.answer("✅ Отправлено другому пользователю!")
+            except:
+                await message.answer("Не удалось отправить просьбу.")
 
 async def main():
-    # 1. Запускаем веб-сервер, чтобы Render был доволен портом
+    # Запуск веб-сервера
     app = aiohttp.web.Application()
     app.router.add_get("/", handle)
     runner = aiohttp.web.AppRunner(app)
     await runner.setup()
     
-    # Порт берется из настроек Render (обычно 10000)
     port = int(os.environ.get("PORT", 10000))
     site = aiohttp.web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
     print(f"Веб-сервер запущен на порту {port}!")
     
-    # 2. Запускаем бота в фоновом режиме
+    # Запуск бота
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
